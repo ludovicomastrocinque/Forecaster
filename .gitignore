@@ -1,0 +1,43 @@
+# Database (never commit live data)
+data/
+*.db
+*.sqlite
+
+# Secrets & credentials
+.streamlit/secrets.toml
+.env
+*.env
+secrets.json
+credentials.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Binary assets (add manually, not via git)
+assets/wildix_logo.png
+assets/sales_roster.xlsx
+
+# Claude Code local-only settings
+.claude/settings.local.json
