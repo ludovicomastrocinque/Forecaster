@@ -164,50 +164,78 @@ def _auto_google_login(page, headed: bool, browser) -> bool:
     # Find and click the Google auth button (.authGoogleIcon)
     log.info("Looking for Google Sign-In button...")
     try:
-        # Try the specific Google icon class first
         btn = page.query_selector('.authGoogleIcon')
         if not btn:
-            # Fallback: any authBtn containing "google" text or icon
             btn = page.query_selector('.authBtn')
-        if btn:
-            log.info("Found Google button — clicking...")
-            # Google OAuth may open a popup — handle both popup and redirect
-            try:
-                with page.context.expect_page(timeout=10_000) as popup_info:
-                    btn.click()
-                popup = popup_info.value
-                log.info("Google OAuth opened in popup — waiting for redirect...")
-                popup.wait_for_load_state("networkidle", timeout=30_000)
-                # Wait for popup to close (means OAuth completed)
-                for _ in range(20):
-                    page.wait_for_timeout(1_500)
-                    if popup.is_closed():
-                        break
-                log.info("Popup closed — checking dashboard...")
-            except PWTimeout:
-                # No popup — it's a redirect in the same page
-                log.info("No popup — waiting for same-page OAuth redirect...")
-                page.wait_for_load_state("networkidle", timeout=30_000)
-        else:
-            log.warning("Google button not found on login page.")
-            if headed:
-                log.info("Please log in manually in the browser window (up to 3 min)...")
-            else:
-                log.error("Cannot auto-login and not in headed mode.")
-                return False
-    except Exception as e:
-        log.warning(f"Google auto-login click failed: {e}")
-        if not headed:
+        if not btn:
+            log.error("Google Sign-In button not found.")
             return False
 
-    # Wait for dashboard to appear
-    for i in range(40):  # up to 2 minutes
+        log.info("Found Google button — clicking...")
+        try:
+            with page.context.expect_page(timeout=10_000) as popup_info:
+                btn.click()
+            popup = popup_info.value
+            log.info("Google OAuth popup opened...")
+            popup.wait_for_load_state("domcontentloaded", timeout=15_000)
+            page.wait_for_timeout(2_000)
+
+            # Handle "Choose an account" screen
+            popup_body = popup.inner_text("body").lower()
+            log.info(f"Popup content: {popup_body[:120]}")
+
+            if "choose an account" in popup_body or "choose account" in popup_body or "@" in popup_body:
+                log.info("Account selection screen detected — clicking first account...")
+                # Click the first listed account
+                account = (
+                    popup.query_selector('[data-email]')
+                    or popup.query_selector('.XWbTKc')       # Google account list item
+                    or popup.query_selector('[data-authuser]')
+                    or popup.query_selector('li[jsname]')
+                )
+                if account:
+                    account.click()
+                    log.info("Clicked account — waiting for popup to close...")
+                else:
+                    # Try clicking any element containing the email
+                    popup.evaluate("""
+                        () => {
+                            const all = Array.from(document.querySelectorAll('*'));
+                            const el = all.find(e => e.children.length === 0 && e.innerText && e.innerText.includes('@wildix.com'));
+                            if (el) el.closest('[data-identifier], li, [role=button]')?.click();
+                        }
+                    """)
+
+            # Wait for popup to close
+            for _ in range(20):
+                page.wait_for_timeout(1_500)
+                if popup.is_closed():
+                    log.info("Popup closed.")
+                    break
+
+        except PWTimeout:
+            log.info("No popup — handling same-page redirect...")
+            page.wait_for_load_state("networkidle", timeout=30_000)
+
+    except Exception as e:
+        log.warning(f"Google auto-login error: {e}")
+        return False
+
+    # After popup closes, reload main page to apply the new session token
+    log.info("Reloading main page to apply session...")
+    try:
+        page.reload(wait_until="networkidle", timeout=20_000)
+    except Exception:
+        page.wait_for_timeout(5_000)
+
+    # Check for dashboard
+    for i in range(20):
         page.wait_for_timeout(3_000)
         body = page.inner_text("body").lower()
         if "sales kpi" in body or "mrr changes" in body or "partners mrr" in body:
             log.info("Dashboard confirmed — login successful.")
             return True
-        if i % 5 == 4:
+        if i % 3 == 2:
             log.info(f"Waiting for dashboard... ({(i+1)*3}s)")
 
     log.error("Login timed out — dashboard never appeared.")
