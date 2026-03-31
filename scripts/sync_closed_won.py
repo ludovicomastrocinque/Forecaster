@@ -150,6 +150,70 @@ def _import_session(page) -> bool:
     return loaded
 
 
+# ── google login automation ────────────────────────────────────────────────────
+
+def _auto_google_login(page, headed: bool, browser) -> bool:
+    """
+    Click the Google Sign-In button on the Wildix login page.
+    Since Playwright's persistent context has accounts.google.com cookies,
+    Google auto-approves without any user input.
+    Returns True if login succeeded.
+    """
+    from playwright.sync_api import TimeoutError as PWTimeout
+
+    # Find and click the Google auth button (.authGoogleIcon)
+    log.info("Looking for Google Sign-In button...")
+    try:
+        # Try the specific Google icon class first
+        btn = page.query_selector('.authGoogleIcon')
+        if not btn:
+            # Fallback: any authBtn containing "google" text or icon
+            btn = page.query_selector('.authBtn')
+        if btn:
+            log.info("Found Google button — clicking...")
+            # Google OAuth may open a popup — handle both popup and redirect
+            try:
+                with page.context.expect_page(timeout=10_000) as popup_info:
+                    btn.click()
+                popup = popup_info.value
+                log.info("Google OAuth opened in popup — waiting for redirect...")
+                popup.wait_for_load_state("networkidle", timeout=30_000)
+                # Wait for popup to close (means OAuth completed)
+                for _ in range(20):
+                    page.wait_for_timeout(1_500)
+                    if popup.is_closed():
+                        break
+                log.info("Popup closed — checking dashboard...")
+            except PWTimeout:
+                # No popup — it's a redirect in the same page
+                log.info("No popup — waiting for same-page OAuth redirect...")
+                page.wait_for_load_state("networkidle", timeout=30_000)
+        else:
+            log.warning("Google button not found on login page.")
+            if headed:
+                log.info("Please log in manually in the browser window (up to 3 min)...")
+            else:
+                log.error("Cannot auto-login and not in headed mode.")
+                return False
+    except Exception as e:
+        log.warning(f"Google auto-login click failed: {e}")
+        if not headed:
+            return False
+
+    # Wait for dashboard to appear
+    for i in range(40):  # up to 2 minutes
+        page.wait_for_timeout(3_000)
+        body = page.inner_text("body").lower()
+        if "sales kpi" in body or "mrr changes" in body or "partners mrr" in body:
+            log.info("Dashboard confirmed — login successful.")
+            return True
+        if i % 5 == 4:
+            log.info(f"Waiting for dashboard... ({(i+1)*3}s)")
+
+    log.error("Login timed out — dashboard never appeared.")
+    return False
+
+
 # ── scraping ───────────────────────────────────────────────────────────────────
 
 def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
@@ -240,10 +304,8 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
             body = page.inner_text("body").lower()
             return (
                 "forgot your password" in body
-                or "sign in" in body
-                or "log in" in body
-                or page.query_selector('input[type="password"]') is not None
-                or page.query_selector('input[type="email"]') is not None
+                or "login" in body
+                or "password" in body
             )
 
         on_dashboard = _page_has_dashboard()
@@ -251,45 +313,27 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         log.info(f"Auth check — on_dashboard={on_dashboard}  on_login={on_login}")
 
         if not on_dashboard:
-            if not headed:
-                log.error(
-                    "Session expired. Run with --setup to log in again:\n"
-                    "  py -3.12 scripts/sync_closed_won.py --setup"
-                )
+            log.info("Not on dashboard — attempting Google Sign-In automatically...")
+            logged_in = _auto_google_login(page, headed, browser)
+            if not logged_in:
                 browser.close()
                 return None
-            else:
-                log.info("=" * 60)
-                log.info("ACTION REQUIRED: A browser window has opened.")
-                log.info("Please log in at: https://my.wildix.com")
-                log.info("The window is at position 100,100 on your screen.")
-                log.info("After login, wait for the dashboard tabs to appear.")
-                log.info("The script will continue automatically.")
-                log.info("=" * 60)
-                # Poll every 3 seconds for up to 3 minutes
-                logged_in = False
-                for i in range(60):
-                    page.wait_for_timeout(3_000)
-                    if _page_has_dashboard():
-                        logged_in = True
-                        break
-                    if i % 10 == 9:
-                        log.info(f"Still waiting for login... ({(i+1)*3}s elapsed)")
-                if not logged_in:
-                    log.error("Login timed out after 3 minutes.")
-                    browser.close()
-                    return None
-                log.info("Login confirmed — waiting 6s for session to flush...")
-                page.wait_for_timeout(6_000)
-                # Export cookies + localStorage for reliable cross-session reuse
-                _export_session(page)
-                log.info("Session saved successfully.")
+            log.info("Login confirmed — waiting 5s for session to settle...")
+            page.wait_for_timeout(5_000)
+            _export_session(page)
+            log.info("Session saved.")
 
-        # ── if --setup mode, session is now saved — exit cleanly ──
+        # ── if --setup mode, exit cleanly after session is saved ──
         if headed:
-            log.info("You can close the browser window now (or it will close in 3s).")
-            page.wait_for_timeout(3_000)
-            browser.close()
+            try:
+                log.info("Setup complete — closing browser in 3s.")
+                page.wait_for_timeout(3_000)
+            except Exception:
+                pass  # user may have closed the window — that's fine
+            try:
+                browser.close()
+            except Exception:
+                pass
             return {"method": "setup_done"}
 
         # ── click Sales KPI (Table) tab ──
