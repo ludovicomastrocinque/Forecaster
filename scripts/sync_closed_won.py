@@ -127,21 +127,24 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         except PWTimeout:
             page.goto("https://my.wildix.com/?#!dashboard", wait_until="domcontentloaded", timeout=30_000)
 
-        # Give the page a moment to settle
-        page.wait_for_timeout(3_000)
-
-        # ── check authentication: look for the top nav username or nav bar ──
-        def is_logged_in():
-            # The portal shows a top nav with the user's name when authenticated
-            html = page.content()
-            return (
-                "Ludovico" in html
-                or "mastrocinque" in html.lower()
-                or "Sales KPI" in html
-                or "MRR Changes" in html
+        # ── wait for either login form OR dashboard content to appear ──
+        # This handles SPAs that render content asynchronously.
+        log.info("Waiting for page to render...")
+        try:
+            page.wait_for_selector(
+                'input[type="password"], text=Sales KPI, text=MRR Changes, text=Dashboard',
+                timeout=20_000,
             )
+        except PWTimeout:
+            log.warning("Page took too long to render — checking content anyway...")
 
-        if not is_logged_in():
+        has_login_form = page.query_selector('input[type="password"]') is not None
+        has_dashboard  = page.query_selector('text=Sales KPI') is not None \
+                      or page.query_selector('text=MRR Changes') is not None
+
+        log.info(f"Auth check — login_form={has_login_form}, dashboard={has_dashboard}")
+
+        if has_login_form or not has_dashboard:
             if not headed:
                 log.error(
                     "Session expired. Run with --setup to log in again:\n"
@@ -151,14 +154,12 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                 return None
             else:
                 log.info("Please log in manually in the browser window. Waiting up to 2 minutes...")
-                # Poll every 3 seconds until logged in
-                logged_in = False
-                for _ in range(40):  # 40 x 3s = 120s max
-                    page.wait_for_timeout(3_000)
-                    if is_logged_in():
-                        logged_in = True
-                        break
-                if not logged_in:
+                try:
+                    page.wait_for_selector(
+                        'text=Sales KPI, text=MRR Changes',
+                        timeout=120_000,
+                    )
+                except PWTimeout:
                     log.error("Login timed out after 2 minutes.")
                     browser.close()
                     return None
