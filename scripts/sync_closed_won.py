@@ -97,8 +97,8 @@ def load_rm_mapping() -> dict:
 
 # ── cookie helpers ─────────────────────────────────────────────────────────────
 
-def _export_cookies(page) -> None:
-    """Save all browser cookies to a JSON file for reuse across sessions."""
+def _export_session(page) -> None:
+    """Save cookies + localStorage to JSON files for reuse across sessions."""
     try:
         cookies = page.context.cookies()
         with open(COOKIES_FILE, "w", encoding="utf-8") as f:
@@ -107,21 +107,47 @@ def _export_cookies(page) -> None:
     except Exception as e:
         log.warning(f"Could not export cookies: {e}")
 
-
-def _import_cookies(page) -> bool:
-    """Load cookies from JSON file into the browser context. Returns True if loaded."""
-    if not COOKIES_FILE.exists():
-        log.warning("No saved cookies file found. Run --setup first.")
-        return False
+    # Also save localStorage (auth tokens often live here)
+    local_storage_file = COOKIES_FILE.parent / "local_storage.json"
     try:
-        with open(COOKIES_FILE, encoding="utf-8") as f:
-            cookies = json.load(f)
-        page.context.add_cookies(cookies)
-        log.info(f"Imported {len(cookies)} cookies from {COOKIES_FILE}")
-        return True
+        storage = page.evaluate("() => { const d={}; for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i); d[k]=localStorage.getItem(k);} return d; }")
+        with open(local_storage_file, "w", encoding="utf-8") as f:
+            json.dump(storage, f, indent=2)
+        log.info(f"Exported {len(storage)} localStorage keys")
     except Exception as e:
-        log.warning(f"Could not import cookies: {e}")
-        return False
+        log.warning(f"Could not export localStorage: {e}")
+
+
+def _import_session(page) -> bool:
+    """Load cookies + localStorage into the browser context. Returns True if loaded."""
+    loaded = False
+
+    if COOKIES_FILE.exists():
+        try:
+            with open(COOKIES_FILE, encoding="utf-8") as f:
+                cookies = json.load(f)
+            page.context.add_cookies(cookies)
+            log.info(f"Imported {len(cookies)} cookies")
+            loaded = True
+        except Exception as e:
+            log.warning(f"Could not import cookies: {e}")
+    else:
+        log.warning("No saved cookies found. Run --setup first.")
+
+    # Restore localStorage after navigating to the domain
+    local_storage_file = COOKIES_FILE.parent / "local_storage.json"
+    if local_storage_file.exists():
+        try:
+            with open(local_storage_file, encoding="utf-8") as f:
+                storage = json.load(f)
+            # localStorage must be set after navigating to the domain
+            # We'll do this after the first navigation in scrape_sales_kpi_table
+            page._ls_to_restore = storage  # stash for later
+            log.info(f"Queued {len(storage)} localStorage keys for restore")
+        except Exception as e:
+            log.warning(f"Could not load localStorage file: {e}")
+
+    return loaded
 
 
 # ── scraping ───────────────────────────────────────────────────────────────────
@@ -145,9 +171,20 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         # Always run headed — the site detects headless Chrome and blocks it.
         # For daily (non-setup) runs, move the window far off-screen so it's
         # invisible to the user but indistinguishable from a real browser.
-        args = ["--disable-blink-features=AutomationControlled"]
-        if not headed:
-            args += ["--window-position=-32000,-32000", "--window-size=1280,900"]
+        if headed:
+            # Visible window, good size for manual login
+            args = [
+                "--disable-blink-features=AutomationControlled",
+                "--window-size=1400,900",
+                "--window-position=100,100",
+            ]
+        else:
+            # Off-screen — invisible but not headless
+            args = [
+                "--disable-blink-features=AutomationControlled",
+                "--window-position=-32000,-32000",
+                "--window-size=1400,900",
+            ]
 
         log.info(f"Launching browser ({'visible' if headed else 'off-screen'})...")
         browser = p.chromium.launch_persistent_context(
@@ -160,7 +197,7 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
 
         # ── inject saved cookies before navigating (daily run only) ──
         if not headed:
-            _import_cookies(page)
+            _import_session(page)
 
         # ── navigate ──
         log.info("Navigating to Wildix Partner Portal...")
@@ -168,6 +205,16 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
             page.goto("https://my.wildix.com/?#!dashboard", wait_until="networkidle", timeout=30_000)
         except PWTimeout:
             page.goto("https://my.wildix.com/?#!dashboard", wait_until="domcontentloaded", timeout=30_000)
+
+        # ── restore localStorage if queued ──
+        ls_data = getattr(page, "_ls_to_restore", None)
+        if ls_data:
+            try:
+                page.evaluate("""(data) => { for(const [k,v] of Object.entries(data)) localStorage.setItem(k,v); }""", ls_data)
+                page.reload(wait_until="networkidle", timeout=20_000)
+                log.info("localStorage restored and page reloaded.")
+            except Exception as e:
+                log.warning(f"localStorage restore failed: {e}")
 
         # ── wait for page to render (SPA needs time to hydrate) ──
         log.info("Waiting for page to render...")
@@ -218,8 +265,8 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                     return None
                 log.info("Login confirmed — waiting 6s for session cookies to flush to disk...")
                 page.wait_for_timeout(6_000)
-                # Export cookies to JSON for reliable cross-session reuse
-                _export_cookies(page)
+                # Export cookies + localStorage for reliable cross-session reuse
+                _export_session(page)
                 log.info("Session saved successfully.")
 
         # ── if --setup mode, session is now saved — exit cleanly ──
