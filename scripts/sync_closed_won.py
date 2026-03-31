@@ -127,12 +127,21 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         except PWTimeout:
             page.goto("https://my.wildix.com/?#!dashboard", wait_until="domcontentloaded", timeout=30_000)
 
-        # ── check login ──
-        is_login = (
+        # Give the page a moment to settle and reveal any login prompts
+        page.wait_for_timeout(3_000)
+
+        # ── check if actually authenticated (look for the bottom tab bar) ──
+        is_authenticated = page.query_selector('[class*="tab"], .tab-bar, [role="tab"]') is not None \
+            or page.query_selector('text=Sales KPI') is not None \
+            or page.query_selector('text=Dashboard') is not None
+
+        is_login_page = (
             "login" in page.url.lower()
             or page.query_selector('input[type="password"]') is not None
+            or not is_authenticated
         )
-        if is_login:
+
+        if is_login_page:
             if not headed:
                 log.error(
                     "Session expired. Run with --setup to log in again:\n"
@@ -142,9 +151,15 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                 return None
             else:
                 log.info("Please log in manually in the browser window. Waiting up to 2 minutes...")
+                # Wait until the tab bar appears — that confirms real authentication
                 try:
-                    page.wait_for_url("**dashboard**", timeout=120_000)
-                    log.info("Login detected, session saved.")
+                    page.wait_for_selector(
+                        '[class*="tab"], text=Sales KPI, text=MRR Changes',
+                        timeout=120_000,
+                    )
+                    log.info("Login confirmed — waiting for session to fully save...")
+                    page.wait_for_timeout(5_000)  # let cookies flush to disk
+                    log.info("Session saved successfully.")
                 except PWTimeout:
                     log.error("Login timed out.")
                     browser.close()
@@ -152,26 +167,52 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
 
         # ── if --setup mode, session is now saved — exit cleanly ──
         if headed:
-            log.info("Session saved successfully. You can close the browser.")
+            log.info("You can close the browser window.")
             page.wait_for_timeout(2_000)
             browser.close()
             return {"method": "setup_done"}
 
         # ── click Sales KPI (Table) tab ──
         log.info("Clicking Sales KPI (Table) tab...")
-        try:
-            page.click("text=Sales KPI (Table)", timeout=15_000)
-        except PWTimeout:
-            # Tab might already be active or label slightly different
-            log.warning("Could not click 'Sales KPI (Table)' — trying partial match...")
+        clicked = False
+        # Try multiple selector strategies
+        tab_selectors = [
+            "text=Sales KPI (Table)",
+            "text=Sales KPI (Table",     # partial — in case closing paren is trimmed
+            "[role='tab']:has-text('Sales KPI (Table)')",
+            "li:has-text('Sales KPI (Table)')",
+            "a:has-text('Sales KPI (Table)')",
+            "span:has-text('Sales KPI (Table)')",
+        ]
+        for sel in tab_selectors:
             try:
-                page.click("text=Sales KPI", timeout=10_000)
+                page.click(sel, timeout=5_000)
+                log.info(f"Clicked tab using selector: {sel}")
+                clicked = True
+                break
             except PWTimeout:
-                log.error("Could not find Sales KPI tab.")
+                continue
+
+        if not clicked:
+            # Last resort: find any element whose text contains the tab label
+            log.warning("Standard selectors failed — trying JavaScript click...")
+            result = page.evaluate("""
+                () => {
+                    const els = Array.from(document.querySelectorAll('*'));
+                    const tab = els.find(el =>
+                        el.children.length === 0 &&
+                        el.innerText && el.innerText.trim().includes('Sales KPI (Table)')
+                    );
+                    if (tab) { tab.click(); return true; }
+                    return false;
+                }
+            """)
+            if not result:
+                log.error("Could not find Sales KPI (Table) tab.")
                 browser.close()
                 return None
 
-        page.wait_for_timeout(3_000)  # Power BI needs time to render
+        page.wait_for_timeout(5_000)  # Power BI needs time to render
 
         # ── find Power BI iframe ──
         log.info("Waiting for Power BI iframe...")
