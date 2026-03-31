@@ -111,11 +111,18 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         return None
 
     with sync_playwright() as p:
-        log.info(f"Launching browser ({'headed' if headed else 'headless'})...")
+        # Always run headed — the site detects headless Chrome and blocks it.
+        # For daily (non-setup) runs, move the window far off-screen so it's
+        # invisible to the user but indistinguishable from a real browser.
+        args = ["--disable-blink-features=AutomationControlled"]
+        if not headed:
+            args += ["--window-position=-32000,-32000", "--window-size=1280,900"]
+
+        log.info(f"Launching browser ({'visible' if headed else 'off-screen'})...")
         browser = p.chromium.launch_persistent_context(
             user_data_dir=str(SESSION_DIR),
-            headless=not headed,
-            args=["--disable-blink-features=AutomationControlled"],
+            headless=False,  # never headless — bypasses bot detection
+            args=args,
         )
 
         page = browser.pages[0] if browser.pages else browser.new_page()
