@@ -232,16 +232,25 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         except Exception as ce:
             log.warning(f"Could not read cookies: {ce}")
 
-        # Check each condition separately to avoid CSS selector parsing issues
-        has_login_form = page.query_selector('input[type="password"]') is not None
-        has_dashboard  = (
-            page.query_selector('text=Sales KPI')   is not None
-            or page.query_selector('text=MRR Changes') is not None
-        )
+        def _page_has_dashboard():
+            body = page.inner_text("body").lower()
+            return "sales kpi" in body or "mrr changes" in body or "partners mrr" in body
 
-        log.info(f"Auth check — login_form={has_login_form}  dashboard={has_dashboard}")
+        def _page_has_login():
+            body = page.inner_text("body").lower()
+            return (
+                "forgot your password" in body
+                or "sign in" in body
+                or "log in" in body
+                or page.query_selector('input[type="password"]') is not None
+                or page.query_selector('input[type="email"]') is not None
+            )
 
-        if has_login_form or not has_dashboard:
+        on_dashboard = _page_has_dashboard()
+        on_login     = _page_has_login()
+        log.info(f"Auth check — on_dashboard={on_dashboard}  on_login={on_login}")
+
+        if not on_dashboard:
             if not headed:
                 log.error(
                     "Session expired. Run with --setup to log in again:\n"
@@ -250,20 +259,27 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                 browser.close()
                 return None
             else:
-                log.info("Please log in manually in the browser window. Waiting up to 2 minutes...")
-                # Poll every 3 seconds for up to 2 minutes
+                log.info("=" * 60)
+                log.info("ACTION REQUIRED: A browser window has opened.")
+                log.info("Please log in at: https://my.wildix.com")
+                log.info("The window is at position 100,100 on your screen.")
+                log.info("After login, wait for the dashboard tabs to appear.")
+                log.info("The script will continue automatically.")
+                log.info("=" * 60)
+                # Poll every 3 seconds for up to 3 minutes
                 logged_in = False
-                for _ in range(40):
+                for i in range(60):
                     page.wait_for_timeout(3_000)
-                    if page.query_selector('text=Sales KPI') is not None \
-                            or page.query_selector('text=MRR Changes') is not None:
+                    if _page_has_dashboard():
                         logged_in = True
                         break
+                    if i % 10 == 9:
+                        log.info(f"Still waiting for login... ({(i+1)*3}s elapsed)")
                 if not logged_in:
-                    log.error("Login timed out after 2 minutes.")
+                    log.error("Login timed out after 3 minutes.")
                     browser.close()
                     return None
-                log.info("Login confirmed — waiting 6s for session cookies to flush to disk...")
+                log.info("Login confirmed — waiting 6s for session to flush...")
                 page.wait_for_timeout(6_000)
                 # Export cookies + localStorage for reliable cross-session reuse
                 _export_session(page)
