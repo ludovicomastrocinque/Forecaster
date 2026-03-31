@@ -39,7 +39,9 @@ LOG_FILE    = ROOT / "data" / "sync_closed_won.log"
 # Browser session must be on a LOCAL (non-OneDrive) path — Chrome locks files
 # that cloud sync tools keep trying to access, causing spawn errors.
 import os as _os
-SESSION_DIR = Path(_os.environ.get("LOCALAPPDATA", _os.path.expanduser("~"))) / "WildixForecaster" / "browser_session"
+_LOCAL = Path(_os.environ.get("LOCALAPPDATA", _os.path.expanduser("~"))) / "WildixForecaster"
+SESSION_DIR  = _LOCAL / "browser_session"
+COOKIES_FILE = _LOCAL / "session_cookies.json"
 
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -93,6 +95,35 @@ def load_rm_mapping() -> dict:
     }
 
 
+# ── cookie helpers ─────────────────────────────────────────────────────────────
+
+def _export_cookies(page) -> None:
+    """Save all browser cookies to a JSON file for reuse across sessions."""
+    try:
+        cookies = page.context.cookies()
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            json.dump(cookies, f, indent=2)
+        log.info(f"Exported {len(cookies)} cookies to {COOKIES_FILE}")
+    except Exception as e:
+        log.warning(f"Could not export cookies: {e}")
+
+
+def _import_cookies(page) -> bool:
+    """Load cookies from JSON file into the browser context. Returns True if loaded."""
+    if not COOKIES_FILE.exists():
+        log.warning("No saved cookies file found. Run --setup first.")
+        return False
+    try:
+        with open(COOKIES_FILE, encoding="utf-8") as f:
+            cookies = json.load(f)
+        page.context.add_cookies(cookies)
+        log.info(f"Imported {len(cookies)} cookies from {COOKIES_FILE}")
+        return True
+    except Exception as e:
+        log.warning(f"Could not import cookies: {e}")
+        return False
+
+
 # ── scraping ───────────────────────────────────────────────────────────────────
 
 def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
@@ -127,6 +158,10 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
 
         page = browser.pages[0] if browser.pages else browser.new_page()
 
+        # ── inject saved cookies before navigating (daily run only) ──
+        if not headed:
+            _import_cookies(page)
+
         # ── navigate ──
         log.info("Navigating to Wildix Partner Portal...")
         try:
@@ -137,6 +172,18 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         # ── wait for page to render (SPA needs time to hydrate) ──
         log.info("Waiting for page to render...")
         page.wait_for_timeout(8_000)
+
+        # Debug: log current URL and page snippet
+        log.info(f"Current URL: {page.url}")
+        snippet = page.inner_text("body")[:300].replace("\n", " ").strip()
+        log.info(f"Page snippet: {snippet}")
+
+        # Export cookies after every page load so we can diagnose
+        try:
+            cookies = page.context.cookies()
+            log.info(f"Cookies found: {len(cookies)} — domains: {list(set(c['domain'] for c in cookies))}")
+        except Exception as ce:
+            log.warning(f"Could not read cookies: {ce}")
 
         # Check each condition separately to avoid CSS selector parsing issues
         has_login_form = page.query_selector('input[type="password"]') is not None
@@ -171,6 +218,8 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                     return None
                 log.info("Login confirmed — waiting 6s for session cookies to flush to disk...")
                 page.wait_for_timeout(6_000)
+                # Export cookies to JSON for reliable cross-session reuse
+                _export_cookies(page)
                 log.info("Session saved successfully.")
 
         # ── if --setup mode, session is now saved — exit cleanly ──
