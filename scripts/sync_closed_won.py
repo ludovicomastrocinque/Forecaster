@@ -33,9 +33,13 @@ from pathlib import Path
 # ── paths ──────────────────────────────────────────────────────────────────────
 ROOT        = Path(__file__).parent.parent
 DB_PATH     = ROOT / "data" / "forecaster.db"
-SESSION_DIR = ROOT / "data" / "browser_session"
 MAPPING_FILE = Path(__file__).parent / "rm_lob_mapping.json"
 LOG_FILE    = ROOT / "data" / "sync_closed_won.log"
+
+# Browser session must be on a LOCAL (non-OneDrive) path — Chrome locks files
+# that cloud sync tools keep trying to access, causing spawn errors.
+import os as _os
+SESSION_DIR = Path(_os.environ.get("LOCALAPPDATA", _os.path.expanduser("~"))) / "WildixForecaster" / "browser_session"
 
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -145,6 +149,13 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                     log.error("Login timed out.")
                     browser.close()
                     return None
+
+        # ── if --setup mode, session is now saved — exit cleanly ──
+        if headed:
+            log.info("Session saved successfully. You can close the browser.")
+            page.wait_for_timeout(2_000)
+            browser.close()
+            return {"method": "setup_done"}
 
         # ── click Sales KPI (Table) tab ──
         log.info("Clicking Sales KPI (Table) tab...")
@@ -463,6 +474,10 @@ def main():
     if raw is None:
         log.error("Scrape failed. Exiting.")
         sys.exit(1)
+
+    if raw.get("method") == "setup_done":
+        log.info("Setup complete. Session saved. Run without --setup for daily sync.")
+        return
 
     if raw.get("method") == "none":
         log.error(f"Could not extract table data. Snippet:\n{raw.get('snippet', '')}")

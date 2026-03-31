@@ -6,26 +6,31 @@
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #   .\scripts\setup_task_scheduler.ps1
 
-$TaskName   = "Wildix Forecaster - Closed-Won Sync"
-$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$TaskName    = "Wildix Forecaster - Closed-Won Sync"
+$ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
-$SyncScript = Join-Path $ScriptDir "sync_closed_won.py"
-$LogPath    = Join-Path $ProjectRoot "data\sync_closed_won.log"
+$SyncScript  = Join-Path $ScriptDir "sync_closed_won.py"
+$LogPath     = Join-Path $ProjectRoot "data\sync_closed_won.log"
 
-# Detect Python path
-$PythonExe = (Get-Command py -ErrorAction SilentlyContinue)?.Source
-if (-not $PythonExe) {
-    $PythonExe = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-}
-if (-not $PythonExe) {
-    Write-Error "Python not found. Make sure 'py' or 'python' is on your PATH."
-    exit 1
+# Detect Python path (PowerShell 5 compatible)
+$PyCmd = Get-Command py -ErrorAction SilentlyContinue
+if ($PyCmd) {
+    $PythonExe = $PyCmd.Source
+} else {
+    $PythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($PythonCmd) {
+        $PythonExe = $PythonCmd.Source
+    } else {
+        Write-Error "Python not found. Make sure 'py' or 'python' is on your PATH."
+        exit 1
+    }
 }
 
 Write-Host "Python found at: $PythonExe" -ForegroundColor Cyan
 Write-Host "Script:          $SyncScript" -ForegroundColor Cyan
 Write-Host "Project root:    $ProjectRoot" -ForegroundColor Cyan
-Write-Host "Log file:        $LogPath`n" -ForegroundColor Cyan
+Write-Host "Log file:        $LogPath"
+Write-Host ""
 
 # Build the task
 $action = New-ScheduledTaskAction `
@@ -36,24 +41,27 @@ $action = New-ScheduledTaskAction `
 $trigger = New-ScheduledTaskTrigger -Daily -At "07:00AM"
 
 $settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit  (New-TimeSpan -Minutes 15) `
-    -RestartCount        2 `
-    -RestartInterval     (New-TimeSpan -Minutes 5) `
-    -StartWhenAvailable  $true   # run on next opportunity if machine was off at 7am
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
+    -RestartCount 2 `
+    -RestartInterval (New-TimeSpan -Minutes 5) `
+    -StartWhenAvailable $true
 
 # Register (overwrites if already exists)
 Register-ScheduledTask `
-    -TaskName    $TaskName `
-    -Action      $action `
-    -Trigger     $trigger `
-    -Settings    $settings `
+    -TaskName $TaskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings `
     -Description "Daily sync of Closed-Won MRR from Wildix Partner Portal to Forecaster DB" `
-    -RunLevel    Highest `
+    -RunLevel Highest `
     -Force | Out-Null
 
-Write-Host "✓ Task '$TaskName' registered." -ForegroundColor Green
-Write-Host "  Runs daily at 7:00 AM (or next available time if PC was off)." -ForegroundColor Green
-Write-Host "  Log: $LogPath" -ForegroundColor Green
+Write-Host "Task registered successfully." -ForegroundColor Green
+Write-Host "Runs daily at 7:00 AM (or next available time if PC was off)." -ForegroundColor Green
+Write-Host "Log: $LogPath" -ForegroundColor Green
 Write-Host ""
-Write-Host "To run immediately: Start-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Yellow
-Write-Host "To remove:          Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false" -ForegroundColor Yellow
+Write-Host "To run immediately:" -ForegroundColor Yellow
+Write-Host "  Start-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "To remove:" -ForegroundColor Yellow
+Write-Host "  Unregister-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Yellow
