@@ -1,0 +1,9 @@
+{
+    "_comment": "Maps Regional Manager names (as shown in Sales KPI Table) to LOB codes. Update if team changes.",
+    "Bjoern Frischknecht": "dach",
+    "Daniel Asensio": "spain",
+    "Franck Ferrero": "france",
+    "Gianluca Verlezza": "italy",
+    "Jeff Winnett": "us",
+    "Rob Loakes": "uk"
+}
