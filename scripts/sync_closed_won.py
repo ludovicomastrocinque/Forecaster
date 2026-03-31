@@ -127,21 +127,21 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
         except PWTimeout:
             page.goto("https://my.wildix.com/?#!dashboard", wait_until="domcontentloaded", timeout=30_000)
 
-        # Give the page a moment to settle and reveal any login prompts
+        # Give the page a moment to settle
         page.wait_for_timeout(3_000)
 
-        # ── check if actually authenticated (look for the bottom tab bar) ──
-        is_authenticated = page.query_selector('[class*="tab"], .tab-bar, [role="tab"]') is not None \
-            or page.query_selector('text=Sales KPI') is not None \
-            or page.query_selector('text=Dashboard') is not None
+        # ── check authentication: look for the top nav username or nav bar ──
+        def is_logged_in():
+            # The portal shows a top nav with the user's name when authenticated
+            html = page.content()
+            return (
+                "Ludovico" in html
+                or "mastrocinque" in html.lower()
+                or "Sales KPI" in html
+                or "MRR Changes" in html
+            )
 
-        is_login_page = (
-            "login" in page.url.lower()
-            or page.query_selector('input[type="password"]') is not None
-            or not is_authenticated
-        )
-
-        if is_login_page:
+        if not is_logged_in():
             if not headed:
                 log.error(
                     "Session expired. Run with --setup to log in again:\n"
@@ -151,24 +151,25 @@ def scrape_sales_kpi_table(headed: bool = False) -> dict | None:
                 return None
             else:
                 log.info("Please log in manually in the browser window. Waiting up to 2 minutes...")
-                # Wait until the tab bar appears — that confirms real authentication
-                try:
-                    page.wait_for_selector(
-                        '[class*="tab"], text=Sales KPI, text=MRR Changes',
-                        timeout=120_000,
-                    )
-                    log.info("Login confirmed — waiting for session to fully save...")
-                    page.wait_for_timeout(5_000)  # let cookies flush to disk
-                    log.info("Session saved successfully.")
-                except PWTimeout:
-                    log.error("Login timed out.")
+                # Poll every 3 seconds until logged in
+                logged_in = False
+                for _ in range(40):  # 40 x 3s = 120s max
+                    page.wait_for_timeout(3_000)
+                    if is_logged_in():
+                        logged_in = True
+                        break
+                if not logged_in:
+                    log.error("Login timed out after 2 minutes.")
                     browser.close()
                     return None
+                log.info("Login confirmed — waiting 6s for session cookies to flush to disk...")
+                page.wait_for_timeout(6_000)
+                log.info("Session saved successfully.")
 
         # ── if --setup mode, session is now saved — exit cleanly ──
         if headed:
-            log.info("You can close the browser window.")
-            page.wait_for_timeout(2_000)
+            log.info("You can close the browser window now (or it will close in 3s).")
+            page.wait_for_timeout(3_000)
             browser.close()
             return {"method": "setup_done"}
 
